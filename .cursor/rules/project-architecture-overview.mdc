@@ -1,0 +1,217 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# 项目技术架构说明
+
+## 项目背景与目标
+
+本项目旨在构建一个分布式服务管理系统，其中**桌面应用（主节点）**负责管理本地及远程的服务节点（子节点）。为了便于本地开发与用户体验，桌面应用需要包含子节点的功能，避免用户在本地环境中额外安装子节点。与此同时，主节点与子节点的架构设计支持分布式部署，并通过 **HTTP 和 WebSocket 混合通信** 实现服务管理与实时数据推送。
+
+---
+
+## 项目技术架构
+
+### 1. 技术栈
+
+以下为主要的技术栈组件：
+
+- **前端**：
+  - **框架**：Nuxt.js 3（基于 Vue.js）
+  - **语言**：TypeScript
+  - **UI 库**：DaisyUI, Nuxt UI
+  - **运行时/包管理器**：Bun ([app/bun.lockb](mdc:app/bun.lockb))
+- **桌面应用**：
+  - **框架**：Electron (相关文件如 [electron/main.ts](mdc:electron/main.ts) 和 [electron/preload.ts](mdc:electron/preload.ts))
+  - **语言**：TypeScript
+  - **功能**：主节点功能集成子节点逻辑，通过 HTTP 和 WebSocket 与远程子节点通信。
+- **子节点**：
+  - **语言**：Go
+  - **功能**：提供服务启动、停止、状态查询的 HTTP 接口，并通过 WebSocket 推送实时数据。
+- **通信协议**：
+  - **HTTP**：用于主节点发送管理命令（如启动、停止、状态查询）。
+  - **WebSocket**：用于子节点向主节点推送实时状态更新。
+- **代码规范与质量工具**：
+  - **前端**：
+    - Eslint ([app/.eslintrc.js](mdc:app/.eslintrc.js))
+    - Prettier ([app/.prettierrc.js](mdc:app/.prettierrc.js))
+    - Stylelint ([app/.stylelintrc.js](mdc:app/.stylelintrc.js))
+    - Husky ([.husky/](mdc:.husky))
+    - Lint-staged
+    - cz-git (Commitizen CLI 和 Git Commit 规范) ([.czrc](mdc:.czrc))
+  - **Go (子节点)**：
+    - golangci-lint (Linter聚合器) ([distributed/go/.golangci.yml](mdc:distributed/go/.golangci.yml))
+    - nilaway (nil 指针静态分析)
+    - govulncheck (Go 官方漏洞扫描工具)
+
+---
+
+### 2. 系统架构图
+
+```plaintext
++----------------+            +----------------+
+| 桌面应用 (主节点) |<--HTTP--> | 子节点 (Go 实现) |
+|  (Electron)    |            |                |
+|                |<--WS-----> |                |
++----------------+            +----------------+
+```
+
+---
+
+### 3. 主要模块
+
+#### **(1) 桌面应用（主节点）**
+
+- **职责**：
+  - 作为分布式服务管理的控制中心。
+  - 通过 HTTP 向子节点发送命令。
+  - 通过 WebSocket 接收子节点的实时状态更新。
+  - 提供本地服务管理功能，集成子节点逻辑，避免本地安装子节点。
+
+- **功能模块**：
+  - **前端界面**（Nuxt.js + DaisyUI + Nuxt UI）：主要 UI 在 [app/pages/index.vue](mdc:app/pages/index.vue)，状态管理可能在 [app/store/services.ts](mdc:app/store/services.ts)。
+    - 提供管理界面，支持服务的启动、停止和状态监控。
+    - 实现前端状态管理逻辑。
+  - **主进程逻辑**（Electron 主进程，核心代码位于 [electron/main.ts](mdc:electron/main.ts)）：
+    - 提供 IPC 通信接口供前端调用。
+    - 使用 HTTP 与远程子节点通信，管理服务。
+    - 使用 WebSocket 接收子节点的实时通知。
+    - 集成子节点逻辑（Go 编译为动态库，通过 `ffi-napi` 调用，相关集成逻辑见 [electron/main.ts](mdc:electron/main.ts)）。
+  - **预加载脚本** ([electron/preload.ts](mdc:electron/preload.ts))：
+    - 暴露主进程功能给前端，支持服务管理和实时更新。
+
+#### **(2) 子节点（Go 实现）**
+
+- **职责**：
+  - 负责接收主节点的管理命令（启动、停止、状态查询）。
+  - 通过 WebSocket 主动向主节点推送实时数据（如日志、状态更新）。
+
+- **功能模块**：
+  - **HTTP 服务** (实现在 [distributed/go/src/http_server.go](mdc:distributed/go/src/http_server.go))：
+    - 接口：
+      - `/start-service`：启动服务。
+      - `/stop-service`：停止服务。
+      - `/status-service`：查询服务状态。
+  - **WebSocket 服务** (实现在 [distributed/go/src/ws_server.go](mdc:distributed/go/src/ws_server.go))：
+    - 主动推送服务的运行状态和日志。
+  - **服务管理逻辑** (主要逻辑和入口在 [distributed/go/src/main.go](mdc:distributed/go/src/main.go))：
+    - 具体实现服务的启动、停止和状态监控。
+  - **Go 模块文件**: ([distributed/go/go.mod](mdc:distributed/go/go.mod))
+
+---
+
+### 4. 通信方式
+
+#### **HTTP**
+- **用途**：
+  - 主节点通过 HTTP 向子节点发送管理命令。
+- **接口设计** (在 [distributed/go/src/http_server.go](mdc:distributed/go/src/http_server.go) 中实现)：
+  - `POST /start-service`：启动指定服务。
+  - `POST /stop-service`：停止指定服务。
+  - `GET /status-service`：查询指定服务的状态。
+
+#### **WebSocket**
+- **用途**：
+  - 子节点通过 WebSocket 向主节点推送实时状态更新或日志 (在 [distributed/go/src/ws_server.go](mdc:distributed/go/src/ws_server.go) 中实现)。
+- **通信流程**：
+  1. 主节点连接子节点的 WebSocket 服务。
+  2. 子节点在服务状态变化时主动推送消息给主节点。
+  3. 主节点通过 WebSocket 接收到消息并更新前端界面。
+
+---
+
+### 5. 本地运行架构
+
+为了便于开发和使用，本地运行时桌面应用会包含子节点功能。实现方式如下：
+- **动态库集成**：
+  - 子节点的服务管理逻辑（HTTP 和 WebSocket 服务）通过 Go 编译为动态库（如 `.so`、`.dll`、`.dylib`）。编译后的二进制文件可能位于 `distributed/go/bin/service_manager`。
+  - 桌面应用主节点 ([electron/main.ts](mdc:electron/main.ts)) 通过 Electron 主进程调用动态库，直接运行子节点逻辑。
+
+---
+
+### 6. 关键技术点
+
+#### **(1) Electron 集成动态库**
+- **功能**：
+  - 主节点在本地直接运行子节点逻辑，无需额外安装。
+- **实现**：
+  - 使用 Go 编译子节点逻辑为动态库。
+  - Electron 主进程 ([electron/main.ts](mdc:electron/main.ts)) 通过 `ffi-napi` 加载动态库，并调用服务管理函数。更多 `ffi-napi` 信息可参考 [https://github.com/node-ffi-napi/node-ffi-napi](mdc:https:/github.com/raviSussol/electron-node-ffi)。
+
+#### **(2) Go 实现 HTTP 和 WebSocket 服务**
+- **HTTP 服务** (由 [distributed/go/src/http_server.go](mdc:distributed/go/src/http_server.go) 提供)：
+  - 提供服务管理接口（启动、停止、状态查询）。
+  - 使用 Go 标准库实现。
+- **WebSocket 服务** (由 [distributed/go/src/ws_server.go](mdc:distributed/go/src/ws_server.go) 提供)：
+  - 提供实时推送服务状态的功能。
+  - 使用 `gorilla/websocket` 库实现。
+
+#### **(3) 前端技术栈与代码质量**
+- **Nuxt.js + TypeScript + Bun** ([app/bun.lockb](mdc:app/bun.lockb))：提供现代化的开发体验和构建性能。
+- **DaisyUI + Nuxt UI**：快速构建美观且一致的用户界面。
+- **代码规范工具** (Eslint ([app/.eslintrc.js](mdc:app/.eslintrc.js)), Prettier ([app/.prettierrc.js](mdc:app/.prettierrc.js)), Stylelint ([app/.stylelintrc.js](mdc:app/.stylelintrc.js)), Husky ([.husky/](mdc:.husky)), Lint-staged, cz-git ([.czrc](mdc:.czrc)))：确保前端代码质量和团队协作的一致性。
+
+#### **(4) Go 代码质量保障**
+- **golangci-lint** (配置见 [distributed/go/.golangci.yml](mdc:distributed/go/.golangci.yml))：集成多种 linter，全面检查代码风格和潜在问题。
+- **nilaway**：专注于检测潜在的 nil 指针解引用错误，提高程序稳定性。
+- **govulncheck**：扫描项目依赖中的已知漏洞，保障安全性。
+
+---
+
+### 7. 文件结构说明
+
+以下是关键目录和文件的功能说明（具体文件路径已在前面章节中通过 `mdc:` 链接标出）：
+
+```plaintext
+project/
+├── app/                            # 前端项目（Nuxt.js）
+│   ├── store/services.ts           # Pinia 状态管理 (可选, 或其他状态管理方案)
+│   ├── pages/index.vue             # 服务管理界面
+│   ├── .eslintrc.js                # Eslint 配置
+│   ├── .prettierrc.js              # Prettier 配置
+│   ├── .stylelintrc.js             # Stylelint 配置
+│   ├── bun.lockb                   # Bun 锁文件
+├── electron/                       # 桌面应用主节点
+│   ├── main.ts                     # Electron 主进程逻辑
+│   ├── preload.ts                  # 预加载脚本
+├── distributed/                    # 子节点服务
+│   ├── go/                         # Go 实现
+│   │   ├── src/http_server.go      # HTTP 服务
+│   │   ├── src/ws_server.go        # WebSocket 服务
+│   │   ├── src/main.go             # 主函数
+│   │   ├── go.mod                  # Go 模块文件
+│   │   ├── .golangci.yml           # golangci-lint 配置
+│   │   └── bin/service_manager     # 编译后的二进制文件
+├── .husky/                         # Husky Git 钩子配置
+├── .czrc                           # cz-git 配置
+```
+
+---
+
+## 技术选型对比与选择
+
+### **Go 的选择原因**
+1. **易用性**：Go 语言简单易学，开发效率高。
+2. **高性能**：Go 原生支持并发，适合实现高效的 HTTP 和 WebSocket 服务。
+3. **生态支持**：Go 标准库和第三方库（如 `gorilla/websocket`）提供了丰富的工具支持。
+4. **部署方便**：Go 编译生成的二进制文件无需额外依赖，跨平台支持良好。
+
+### **HTTP 与 WebSocket 的混合使用**
+- **HTTP**：
+  - 易于实现和调试。
+  - 适合一次性请求的操作，如服务启动、停止和状态查询。
+- **WebSocket**：
+  - 支持双向通信，适合实时推送服务状态或日志。
+  - 减少轮询的开销，提高实时性。
+
+---
+
+## 总结
+
+通过以上设计，项目可以在本地和分布式环境中灵活运行，具备以下特点：
+1. **集成性**：桌面应用包含子节点功能，降低本地使用门槛。
+2. **高效通信**：HTTP 和 WebSocket 混合使用，兼具易用性和实时性。
+3. **可扩展性**：基于 Go 的子节点服务易于扩展，支持分布式部署。
+4. **现代化前端**：采用 Nuxt.js、TypeScript、Bun 及 UI 库，提升开发体验和界面质量。
+5. **代码质量保障**：通过全面的代码规范和质量工具，确保项目健壮性和可维护性。
